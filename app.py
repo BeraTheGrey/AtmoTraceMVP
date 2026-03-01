@@ -22,7 +22,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from ai_engine import (
     forecast_pollution, classify_source, detect_anomalies,
-    generate_executive_report,
+    generate_executive_report, generate_executive_report_gemini,
 )
 
 # =========================================================================== #
@@ -934,40 +934,65 @@ with tab_analiz:
         st.dataframe(top5, use_container_width=True, hide_index=True)
 
     # ================================================================== #
-    #  AI Yönetici Raporu (Mock LLM + Daktilo Efekti)
+    #  AI Yönetici Raporu (Gemini + Fallback Şablon + Daktilo Efekti)
     # ================================================================== #
     st.divider()
     st.subheader("🤖 AI Yönetici Raporu")
-    st.caption("Üretken yapay zekâ ile anlık durum özeti — tüm analiz sonuçlarını tek raporda birleştirir.")
+    st.caption("Google Gemini üretken yapay zekâ ile anlık durum özeti — tüm analiz sonuçlarını tek raporda birleştirir.")
 
     if st.button("📝 Rapor Üret", use_container_width=True, key="btn_ai_report"):
         # Tahmin verisini hazırla
         fc_for_report = forecast_pollution(all_df, pollutant="pm10", horizon=24)
 
-        report_text = generate_executive_report(
-            selected_hour=selected_hour,
-            result=result,
-            df_scored=df_scored,
-            nearest_source=nearest_source,
-            nearest_dist=nearest_dist,
-            fingerprint=fingerprint,
-            anomaly_count=len(anomaly_stations),
-            forecast_df=fc_for_report,
-        )
+        # Gemini API anahtarını al
+        gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+
+        report_text = ""
+        used_gemini = False
+
+        if gemini_key:
+            with st.spinner("🧠 Gemini AI rapor üretiyor..."):
+                report_text = generate_executive_report_gemini(
+                    selected_hour=selected_hour,
+                    result=result,
+                    df_scored=df_scored,
+                    nearest_source=nearest_source,
+                    nearest_dist=nearest_dist,
+                    fingerprint=fingerprint,
+                    anomaly_count=len(anomaly_stations),
+                    forecast_df=fc_for_report,
+                    api_key=gemini_key,
+                )
+                if report_text:
+                    used_gemini = True
+
+        # Fallback: Gemini başarısız olursa şablon rapor
+        if not report_text:
+            report_text = generate_executive_report(
+                selected_hour=selected_hour,
+                result=result,
+                df_scored=df_scored,
+                nearest_source=nearest_source,
+                nearest_dist=nearest_dist,
+                fingerprint=fingerprint,
+                anomaly_count=len(anomaly_stations),
+                forecast_df=fc_for_report,
+            )
 
         # Daktilo efekti
         report_placeholder = st.empty()
         displayed = ""
-        # Kelime kelime yaz (hız: ~60 kelime/saniye)
         words = report_text.split(" ")
         for i, word in enumerate(words):
             displayed += word + " "
-            # Her 3 kelimede bir güncelle (performans için)
             if i % 3 == 0 or i == len(words) - 1:
                 report_placeholder.markdown(displayed)
                 time.sleep(0.03)
 
-        st.success("✅ Rapor üretimi tamamlandı.")
+        if used_gemini:
+            st.success("✅ Rapor Gemini AI tarafından üretildi.")
+        else:
+            st.success("✅ Rapor üretimi tamamlandı (şablon modu).")
 
 # =========================================================================== #
 #  TAB 2 — Metodoloji (Akademik & Vizyoner Sürüm)

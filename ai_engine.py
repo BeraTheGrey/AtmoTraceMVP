@@ -5,7 +5,8 @@ Dört AI/ML modülü:
   1. forecast_pollution()          — 24 saatlik kirlilik tahmini (Holt üstel düzleştirme)
   2. classify_source()             — Kaynak parmak izi sınıflandırma (kural tabanlı karar ağacı)
   3. detect_anomalies()            — Isolation Forest anomali tespiti
-  4. generate_executive_report()   — Üretken AI yönetici raporu (mock LLM)
+  4. generate_executive_report()   — Şablon tabanlı yönetici raporu (fallback)
+  4b. generate_executive_report_gemini() — Google Gemini ile üretken AI yönetici raporu
 """
 
 import numpy as np
@@ -357,3 +358,116 @@ def generate_executive_report(
     )
 
     return "\n\n".join(sections)
+
+
+# =========================================================================== #
+#  4b. Üretken AI Yönetici Raporu — Google Gemini
+# =========================================================================== #
+def generate_executive_report_gemini(
+    selected_hour,
+    result: dict,
+    df_scored: pd.DataFrame,
+    nearest_source: dict | None,
+    nearest_dist: float,
+    fingerprint: dict,
+    anomaly_count: int,
+    forecast_df: pd.DataFrame | None = None,
+    api_key: str = "",
+) -> str:
+    """
+    Google Gemini Flash ile gerçek üretken AI yönetici raporu üretir.
+    Tüm analiz verilerini yapılandırılmış prompt olarak gönderir,
+    Türkçe Markdown formatında profesyonel bir özet döndürür.
+
+    Başarısız olursa boş string döner (app.py fallback'e geçer).
+    """
+    import google.generativeai as genai
+
+    if not api_key:
+        return ""
+
+    genai.configure(api_key=api_key)
+
+    # --- Veri özetini hazırla ---
+    hour_str = selected_hour.strftime("%d.%m.%Y %H:%M")
+    n_contributing = result["n_contributing"]
+    top_station = df_scored.sort_values("pollution_score", ascending=False).iloc[0]
+
+    avg_pm10 = df_scored["pm10"].mean()
+    avg_pm10 = avg_pm10 if pd.notna(avg_pm10) else 0
+    avg_pm25 = df_scored["pm25"].mean() if "pm25" in df_scored else 0
+    avg_so2 = df_scored["so2"].mean() if "so2" in df_scored else 0
+    avg_no2 = df_scored["no2"].mean() if "no2" in df_scored else 0
+
+    forecast_info = ""
+    if forecast_df is not None and not forecast_df.empty:
+        fc_max = forecast_df["tahmin"].max()
+        fc_min = forecast_df["tahmin"].min()
+        fc_trend = (
+            "yukselis" if forecast_df["tahmin"].iloc[-1] > forecast_df["tahmin"].iloc[0]
+            else "dusus"
+        )
+        forecast_info = (
+            f"24 saatlik tahmin: {fc_min:.0f}-{fc_max:.0f} ug/m3 araliginda, "
+            f"trend {fc_trend} yonunde."
+        )
+
+    nearest_info = ""
+    if nearest_source:
+        nearest_info = (
+            f"En yakin bilinen kaynak: {nearest_source['name']} "
+            f"({nearest_source['type']}), {nearest_dist:.1f} km mesafede."
+        )
+
+    prompt = f"""Sen AtmoTrace hava kalitesi analiz platformunun yapay zeka raporlama modulusun.
+Asagidaki analiz verilerini kullanarak Turkce, profesyonel bir yonetici ozet raporu yaz.
+Rapor Markdown formatinda olmali, basliklar ve emoji icermeli.
+Raporun sonunda aksiyon onerileri sun.
+
+## ANALIZ VERILERI:
+
+- Analiz zamani: {hour_str}
+- Sehir: Izmir, Turkiye
+- Degerlendirien istasyon sayisi: {n_contributing}
+- Tespit edilen kaynak koordinatlari: {result['source_lat']:.4f}K, {result['source_lon']:.4f}D
+- Yogunluk tepe degeri: {result['peak_density']:.4f}
+
+### Kirlilik Ortalamalari:
+- PM10: {avg_pm10:.1f} ug/m3
+- PM2.5: {avg_pm25:.1f} ug/m3
+- SO2: {avg_so2:.1f} ug/m3
+- NO2: {avg_no2:.1f} ug/m3
+
+### Kaynak Parmak Izi:
+- Baskin kaynak turu: {fingerprint['label']}
+- Guven orani: %{fingerprint['confidence']*100:.0f}
+- Aciklama: {fingerprint['desc']}
+- SO2/NO2 orani: {fingerprint['ratios']['SO₂/NO₂']}
+- PM2.5/PM10 orani: {fingerprint['ratios']['PM2.5/PM10']}
+
+### Anomali:
+- Anomali tespit edilen istasyon sayisi: {anomaly_count}
+
+### Dogrulama:
+{nearest_info if nearest_info else "Bilinen yakin kaynak bulunamadi."}
+
+### Tahmin:
+{forecast_info if forecast_info else "Tahmin verisi mevcut degil."}
+
+### En Kirli Istasyon:
+- Ad: {top_station['station_name']}
+- Kirlilik skoru: {top_station['pollution_score']:.3f}
+
+## RAPOR FORMATI:
+- Baslik: "## 🤖 AtmoTrace AI — Yonetici Ozet Raporu"
+- Bolumlere ayir: Genel Durum, Kaynak Tespiti, Parmak Izi Analizi, Dogrulama, Anomali, Tahmin, Eylem Onerileri
+- Turkce yaz, profesyonel ve bilimsel uslup kullan
+- Raporu "Bu rapor AtmoTrace AI (Gemini) tarafindan otomatik uretilmistir." notu ile bitir
+"""
+
+    try:
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception:
+        return ""
