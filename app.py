@@ -294,6 +294,15 @@ with st.sidebar:
 
     st.divider()
     st.subheader("🔄 Veri Güncelleme")
+    st.info(
+        "ℹ️ **Bu özellik yalnızca lokalde çalışır.**\n\n"
+        "Kirlilik verileri T.C. Çevre, Şehircilik ve İklim Değişikliği Bakanlığı (ÇŞİDB) API'sinden çekilmektedir. "
+        "Bakanlık sunucusu yalnızca Türkiye IP adreslerinden gelen istekleri kabul etmekte, "
+        "bulut sunucularından (Streamlit Cloud, AWS vb.) gelen istekleri reddetmektedir.\n\n"
+        "Bu nedenle veri güncelleme işlemi yalnızca **yerel bilgisayarınızdan** çalıştırılabilir. "
+        "Güncel veri elde etmek için lokalde bu butonu kullanın veya terminalde `python csb_veri_indirme.py` komutunu çalıştırın.",
+        icon="🌐"
+    )
     if st.button("🔄 CSB'den Güncel Veri Çek", use_container_width=True, key="btn_refresh"):
         with st.status("Veri güncelleniyor...", expanded=True) as status:
             from csb_veri_indirme import download_fresh_data
