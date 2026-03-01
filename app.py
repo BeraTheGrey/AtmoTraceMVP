@@ -1672,13 +1672,20 @@ Böylece tahmine dayalı, yavaş denetimlerin yerini; **matematiksel kanıtlara 
 """)
 
     st.subheader("👥 Takım")
-    st.markdown("""
-| Rol | İsim |
-|-----|------|
-| **Geliştirici** | Bera |
-
-*İklim için Dijital Dönüşüm Ideathon'u 2026*
-""")
+    st.markdown(
+        "**Ahmet Bera Onar** — Geliştirici  \n"
+        "[![GitHub](https://img.shields.io/badge/GitHub-181717?style=flat&logo=github&logoColor=white)](https://github.com/BeraTheGrey) "
+        "[![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/ahmetberaonar/)"
+    )
+    st.markdown(
+        "**Fatıma Yaylı**  \n"
+        "[![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/fatima-yayli/)"
+    )
+    st.markdown(
+        "**Tuba Köten**  \n"
+        "[![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat&logo=linkedin&logoColor=white)](http://www.linkedin.com/in/tubak%C3%B6ten742)"
+    )
+    st.caption("İklim için Dijital Dönüşüm Ideathon'u 2026")
 
     st.divider()
     st.markdown(
