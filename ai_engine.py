@@ -1,12 +1,15 @@
 """
 AtmoTrace MVP — Yapay Zekâ Motoru (ai_engine.py)
 
-Dört AI/ML modülü:
-  1. forecast_pollution()          — 24 saatlik kirlilik tahmini (Holt üstel düzleştirme)
-  2. classify_source()             — Kaynak parmak izi sınıflandırma (kural tabanlı karar ağacı)
-  3. detect_anomalies()            — Isolation Forest anomali tespiti
-  4. generate_executive_report()   — Şablon tabanlı yönetici raporu (fallback)
+AI/ML modülleri:
+  1.  forecast_pollution()               — 24 saatlik kirlilik tahmini (Holt üstel düzleştirme)
+  2.  classify_source()                  — Kaynak parmak izi sınıflandırma (kural tabanlı karar ağacı)
+  3.  detect_anomalies()                 — Isolation Forest anomali tespiti
+  4a. generate_executive_report()        — Şablon tabanlı yönetici raporu (fallback)
   4b. generate_executive_report_gemini() — Google Gemini ile üretken AI yönetici raporu
+  5.  cluster_stations()                 — K-Means istasyon kümeleme
+  6.  compute_health_risk()              — Sağlık risk skoru hesaplama
+  7.  gemini_interpret()                 — Gemini ile serbest metin yorumlama (chatbot & korelasyon)
 """
 
 import numpy as np
@@ -466,8 +469,151 @@ Raporun sonunda aksiyon onerileri sun.
 """
 
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         response = model.generate_content(prompt)
+        return response.text
+    except Exception:
+        return ""
+
+
+# =========================================================================== #
+#  5. İstasyon Kümeleme — K-Means
+# =========================================================================== #
+def cluster_stations(df_snapshot: pd.DataFrame, n_clusters: int = 3) -> pd.DataFrame:
+    """
+    İstasyonları kirlilik profillerine göre K-Means ile kümeler.
+
+    Returns:
+        DataFrame: orijinal + 'cluster' sütunu (0, 1, 2, ...)
+    """
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import StandardScaler
+
+    features = ["pm10", "pm25", "so2", "no2"]
+    available = [f for f in features if f in df_snapshot.columns]
+
+    df = df_snapshot.copy()
+    subset = df[available].fillna(0)
+
+    if len(subset) < n_clusters:
+        df["cluster"] = 0
+        return df
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(subset)
+
+    km = KMeans(n_clusters=n_clusters, n_init=10, random_state=42)
+    df["cluster"] = km.fit_predict(X)
+
+    # Kümeleri kirlilik ortalamasına göre sırala (0 = en temiz)
+    cluster_means = df.groupby("cluster")[available].mean().mean(axis=1).sort_values()
+    rank_map = {old: new for new, old in enumerate(cluster_means.index)}
+    df["cluster"] = df["cluster"].map(rank_map)
+
+    return df
+
+
+CLUSTER_INFO = {
+    0: {"label": "Temiz Bölge", "color": "#4CAF50", "icon": "🟢"},
+    1: {"label": "Orta Kirlilik", "color": "#FF9800", "icon": "🟡"},
+    2: {"label": "Yüksek Kirlilik", "color": "#F44336", "icon": "🔴"},
+}
+
+
+# =========================================================================== #
+#  6. Sağlık Risk Skoru
+# =========================================================================== #
+def compute_health_risk(df_scored: pd.DataFrame) -> dict:
+    """
+    AQI + kirletici profil bileşeninden sağlık risk skoru ve öneri üretir.
+
+    Returns:
+        dict: score (0-100), level, color, icon, recommendations (list)
+    """
+    pm10 = df_scored["pm10"].mean() if "pm10" in df_scored else 0
+    pm25 = df_scored["pm25"].mean() if "pm25" in df_scored else 0
+    so2 = df_scored["so2"].mean() if "so2" in df_scored else 0
+    no2 = df_scored["no2"].mean() if "no2" in df_scored else 0
+
+    pm10 = pm10 if pd.notna(pm10) else 0
+    pm25 = pm25 if pd.notna(pm25) else 0
+    so2 = so2 if pd.notna(so2) else 0
+    no2 = no2 if pd.notna(no2) else 0
+
+    # Ağırlıklı risk skoru (0-100 arası)
+    score = min(100, (
+        (pm10 / 200) * 30 +    # PM10: WHO limit 45, ağır kirlilik 200+
+        (pm25 / 75) * 30 +     # PM2.5: WHO limit 15, ağır 75+
+        (so2 / 125) * 20 +     # SO₂: WHO limit 40
+        (no2 / 100) * 20       # NO₂: WHO limit 25
+    ) * 100 / 100)
+
+    if score >= 75:
+        level = "Çok Yüksek Risk"
+        color = "#B71C1C"
+        icon = "🔴"
+        recs = [
+            "Dışarı çıkmaktan kaçının, özellikle çocuklar ve yaşlılar.",
+            "Pencere ve kapıları kapalı tutun.",
+            "Astım hastaları ilaçlarını yanında bulundursun.",
+            "Açık hava egzersizlerini tamamen iptal edin.",
+            "Hava temizleyici (HEPA filtre) kullanımı önerilir.",
+        ]
+    elif score >= 50:
+        level = "Yüksek Risk"
+        color = "#E65100"
+        icon = "🟠"
+        recs = [
+            "Hassas gruplar (çocuklar, yaşlılar, kronik hastalar) dışarıda uzun süre kalmasın.",
+            "Yoğun açık hava aktivitelerini azaltın.",
+            "Maske (N95/FFP2) kullanımı önerilir.",
+            "Havalandırma yerine iç hava sirkülasyonu tercih edin.",
+        ]
+    elif score >= 25:
+        level = "Orta Risk"
+        color = "#F9A825"
+        icon = "🟡"
+        recs = [
+            "Hassas gruplar uzun süreli açık hava aktivitelerini sınırlandırsın.",
+            "Yoğun trafikli bölgelerde yürüyüşten kaçının.",
+            "Sabah erken veya akşam geç saatlerde egzersiz yapın.",
+        ]
+    else:
+        level = "Düşük Risk"
+        color = "#388E3C"
+        icon = "🟢"
+        recs = [
+            "Hava kalitesi genel olarak iyi — normal aktivitelere devam edilebilir.",
+            "Yine de hassas bireyler kirlilik yoğun saatlerden kaçınmalı.",
+        ]
+
+    return {
+        "score": round(score, 1),
+        "level": level,
+        "color": color,
+        "icon": icon,
+        "recommendations": recs,
+    }
+
+
+# =========================================================================== #
+#  7. Gemini Serbest Yorumlama (Chatbot & Korelasyon Yorum)
+# =========================================================================== #
+def gemini_interpret(prompt_text: str, api_key: str = "") -> str:
+    """
+    Genel amaçlı Gemini yorumlama fonksiyonu.
+    Chatbot ve korelasyon matrisi yorumu için kullanılır.
+    """
+    import google.generativeai as genai
+
+    if not api_key:
+        return ""
+
+    genai.configure(api_key=api_key)
+
+    try:
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content(prompt_text)
         return response.text
     except Exception:
         return ""

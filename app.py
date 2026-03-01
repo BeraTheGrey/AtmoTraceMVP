@@ -23,6 +23,7 @@ import plotly.graph_objects as go
 from ai_engine import (
     forecast_pollution, classify_source, detect_anomalies,
     generate_executive_report, generate_executive_report_gemini,
+    cluster_stations, CLUSTER_INFO, compute_health_risk, gemini_interpret,
 )
 
 # =========================================================================== #
@@ -228,8 +229,14 @@ st.set_page_config(
 )
 
 st.title("\U0001F30D AtmoTrace: Kirletici Kaynak Tespit Platformu")
+st.markdown(
+    "Hava kirliliğinin **nereden geldiğini** tespit eden yapay zekâ destekli karar destek sistemi. "
+    "CSB istasyon verileri ve meteorolojik rüzgâr vektörlerini tersine mühendislikle işleyerek "
+    "muhtemel emisyon kaynağını harita üzerinde işaretler."
+)
 st.caption(
-    "İzmir ili | Çoklu istasyon ile tersine yörünge kesişim analizi "
+    "İzmir ili | Çoklu istasyon tersine yörünge kesişim analizi | "
+    "CSB + Open-Meteo | Gemini AI"
 )
 
 # =========================================================================== #
@@ -790,6 +797,10 @@ with tab_analiz:
     st.subheader("\U0001F4C8 İstatistik Paneli")
 
     all_df = _all_data
+    _data_start = all_df["timestamp"].min().strftime("%d.%m.%Y %H:%M")
+    _data_end = all_df["timestamp"].max().strftime("%d.%m.%Y %H:%M")
+    _data_range_label = f"📅 Veri aralığı: **{_data_start}** → **{_data_end}**"
+    st.markdown(_data_range_label)
 
     POLLUTANTS = {
         "pm10":  {"label": "PM10",  "unit": "\u00B5g/m\u00B3", "color": "#1565C0"},
@@ -1019,7 +1030,7 @@ with tab_analiz:
     # ================================================================== #
     st.divider()
     st.subheader("🚗 Rush Hour NO₂ Analizi — Trafik Kaynak Korelasyonu")
-    st.caption("Trafiğin yoğun olduğu zirve saatlerde (07:00–09:30, 17:00–19:30) NO₂ seviyesinin günün geri kalanıyla karşılaştırması.")
+    st.caption(f"Trafiğin yoğun olduğu zirve saatlerde (07:00–09:30, 17:00–19:30) NO₂ seviyesinin günün geri kalanıyla karşılaştırması. | {_data_range_label}")
 
     if "no2" in all_df.columns and "timestamp" in all_df.columns:
         _rh_df = all_df[["timestamp", "no2"]].dropna(subset=["no2"]).copy()
@@ -1108,6 +1119,174 @@ with tab_analiz:
         st.info("NO₂ verisi mevcut değil — trafik analizi yapılamadı.")
 
     # ================================================================== #
+    #  Kirletici Korelasyon Matrisi + AI Yorum
+    # ================================================================== #
+    st.divider()
+    st.subheader("🔗 Kirletici Korelasyon Matrisi")
+    st.caption(f"Kirleticiler arasındaki istatistiksel ilişki — yüksek korelasyon ortak kaynağa işaret edebilir. | {_data_range_label}")
+
+    _corr_candidates = ["pm10", "pm25", "so2", "no2", "co", "o3"]
+    # Sadece yeterli veri olan sütunları al (en az %30 dolu)
+    _corr_cols = [
+        c for c in _corr_candidates
+        if c in all_df.columns and all_df[c].notna().sum() > len(all_df) * 0.3
+    ]
+    if len(_corr_cols) >= 2:
+        _corr_labels = {"pm10": "PM10", "pm25": "PM2.5", "so2": "SO₂", "no2": "NO₂", "co": "CO", "o3": "O₃"}
+        _corr_df = all_df[_corr_cols]
+        _corr_matrix = _corr_df.corr(min_periods=5)  # pairwise korelasyon
+
+        _display_labels = [_corr_labels.get(c, c) for c in _corr_matrix.columns]
+        fig_corr = go.Figure(data=go.Heatmap(
+            z=_corr_matrix.values,
+            x=_display_labels,
+            y=_display_labels,
+            colorscale="RdBu_r",
+            zmin=-1, zmax=1,
+            text=np.round(_corr_matrix.values, 2),
+            texttemplate="%{text}",
+            textfont={"size": 13},
+            hovertemplate="<b>%{x}</b> ↔ <b>%{y}</b><br>Korelasyon: %{z:.2f}<extra></extra>",
+        ))
+        fig_corr.update_layout(
+            height=380,
+            margin=dict(l=0, r=0, t=30, b=0),
+        )
+        st.plotly_chart(fig_corr, use_container_width=True)
+
+        # Gemini AI Yorum
+        _gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+        if _gemini_key:
+            _corr_cache = st.session_state.get("_corr_ai_cache", {})
+            _corr_hash = str(sorted(_corr_cols)) + str(len(_corr_df))
+            if _corr_cache.get("hash") == _corr_hash and _corr_cache.get("text"):
+                st.info("🤖 **Gemini AI Yorum:**\n\n" + _corr_cache["text"])
+            else:
+                _pairs = []
+                for i, c1 in enumerate(_corr_matrix.columns):
+                    for c2 in _corr_matrix.columns[i+1:]:
+                        _pairs.append(f"{_corr_labels.get(c1,c1)} ↔ {_corr_labels.get(c2,c2)}: {_corr_matrix.loc[c1,c2]:.2f}")
+                _corr_prompt = (
+                    "Sen bir hava kalitesi uzmanısın. Aşağıdaki İzmir ili kirletici korelasyon "
+                    "matrisini yorumla. Hangi kirleticiler yüksek korelasyon gösteriyor ve bu "
+                    "ortak kaynak hakkında ne söylüyor? 3-4 cümleyle Türkçe, bilimsel ve öz yaz.\n\n"
+                    + "\n".join(_pairs)
+                )
+                _corr_ai = gemini_interpret(_corr_prompt, _gemini_key)
+                if _corr_ai:
+                    st.session_state["_corr_ai_cache"] = {"hash": _corr_hash, "text": _corr_ai}
+                    st.info("🤖 **Gemini AI Yorum:**\n\n" + _corr_ai)
+    else:
+        st.info("Korelasyon matrisi için en az 2 kirletici verisi gerekli.")
+
+    # ================================================================== #
+    #  İstasyon Kümeleme — K-Means
+    # ================================================================== #
+    st.divider()
+    st.subheader("🗺️ İstasyon Kümeleme (K-Means)")
+    st.caption("İstasyonlar kirlilik profillerine göre otomatik gruplandı — benzer kirlilik bölgeleri aynı renkte.")
+
+    df_clustered = cluster_stations(df_scored, n_clusters=3)
+
+    cl_col1, cl_col2 = st.columns([2, 1])
+    with cl_col1:
+        fig_cl = go.Figure()
+        for cl_id in sorted(df_clustered["cluster"].unique()):
+            info = CLUSTER_INFO.get(cl_id, CLUSTER_INFO[2])
+            subset = df_clustered[df_clustered["cluster"] == cl_id]
+            fig_cl.add_trace(go.Scattermap(
+                lat=subset["lat"],
+                lon=subset["lon"],
+                mode="markers+text",
+                marker=dict(size=14, color=info["color"]),
+                text=subset["station_name"],
+                textposition="top center",
+                name=f"{info['icon']} {info['label']}",
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    f"Küme: {info['label']}<br>"
+                    "Konum: %{lat:.4f}, %{lon:.4f}<extra></extra>"
+                ),
+            ))
+        fig_cl.update_layout(
+            map=dict(
+                style="carto-positron",
+                center=dict(lat=df_scored["lat"].mean(), lon=df_scored["lon"].mean()),
+                zoom=9,
+            ),
+            height=400,
+            margin=dict(l=0, r=0, t=0, b=0),
+            legend=dict(orientation="h", y=-0.05),
+        )
+        st.plotly_chart(fig_cl, use_container_width=True)
+
+    with cl_col2:
+        st.markdown("**Küme Özeti**")
+        for cl_id in sorted(df_clustered["cluster"].unique()):
+            info = CLUSTER_INFO.get(cl_id, CLUSTER_INFO[2])
+            subset = df_clustered[df_clustered["cluster"] == cl_id]
+            avg_pm = subset["pm10"].mean() if "pm10" in subset else 0
+            avg_pm = avg_pm if pd.notna(avg_pm) else 0
+            st.markdown(
+                f"{info['icon']} **{info['label']}** — {len(subset)} istasyon\n\n"
+                f"&nbsp;&nbsp;Ort. PM10: **{avg_pm:.1f}** µg/m³"
+            )
+        st.caption(
+            "💡 K-Means algoritması, her istasyonun PM10, PM2.5, SO₂ ve NO₂ "
+            "değerlerini normalize ederek benzer kirlilik profillerini otomatik gruplandırır."
+        )
+
+    # ================================================================== #
+    #  Sağlık Risk Skoru & AI Öneriler
+    # ================================================================== #
+    st.divider()
+    st.subheader("🏥 Sağlık Risk Değerlendirmesi")
+
+    health = compute_health_risk(df_scored)
+
+    hr_col1, hr_col2 = st.columns([1, 2])
+    with hr_col1:
+        st.markdown(
+            f"<div style='text-align:center; padding:20px; "
+            f"background:{health['color']}22; border-radius:16px; "
+            f"border:2px solid {health['color']}'>"
+            f"<span style='font-size:3.5em'>{health['icon']}</span><br>"
+            f"<b style='font-size:2em; color:{health['color']}'>{health['score']}</b>"
+            f"<span style='font-size:1em; color:{health['color']}'>/100</span><br>"
+            f"<b style='color:{health['color']}'>{health['level']}</b>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("Skor: PM10, PM2.5, SO₂, NO₂ WHO limit değerlerine göre ağırlıklı hesaplama")
+
+    with hr_col2:
+        st.markdown("**📋 Sağlık Önerileri:**")
+        for rec in health["recommendations"]:
+            st.markdown(f"- {rec}")
+
+        # Gemini ile kişiselleştirilmiş yorum
+        _gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+        if _gemini_key:
+            _health_cache = st.session_state.get("_health_ai_cache", {})
+            _health_hash = f"{health['score']}_{health['level']}"
+            if _health_cache.get("hash") == _health_hash and _health_cache.get("text"):
+                st.info("🤖 " + _health_cache["text"])
+            else:
+                _health_prompt = (
+                    f"Sen bir halk sağlığı uzmanısın. İzmir'de şu an sağlık risk skoru "
+                    f"{health['score']}/100 ({health['level']}). "
+                    f"Ortalama kirletici değerleri: PM10={df_scored['pm10'].mean():.1f}, "
+                    f"PM2.5={df_scored['pm25'].mean():.1f}, SO₂={df_scored['so2'].mean():.1f}, "
+                    f"NO₂={df_scored['no2'].mean():.1f} µg/m³. "
+                    "Bu duruma özel 2-3 cümlelik Türkçe, anlaşılır bir sağlık değerlendirmesi yaz. "
+                    "Hassas grupları ve pratik önerileri vurgula."
+                )
+                _health_ai = gemini_interpret(_health_prompt, _gemini_key)
+                if _health_ai:
+                    st.session_state["_health_ai_cache"] = {"hash": _health_hash, "text": _health_ai}
+                    st.info("🤖 " + _health_ai)
+
+    # ================================================================== #
     #  AI Yönetici Raporu (Gemini + Fallback Şablon + Daktilo Efekti)
     # ================================================================== #
     st.divider()
@@ -1183,9 +1362,97 @@ with tab_analiz:
 
         if used_gemini:
             st.success("✅ Rapor Gemini AI tarafından üretildi.")
-            st.caption("Powered by Google Gemini 2.0 Flash")
+            st.caption("Powered by Google Gemini 2.5 Flash")
         else:
             st.success("✅ Rapor üretimi tamamlandı (şablon modu).")
+
+    # ================================================================== #
+    #  Gemini AI Chatbot — Veri Odaklı Soru-Cevap
+    # ================================================================== #
+    st.divider()
+    st.subheader("💬 AtmoTrace AI Asistan")
+    st.caption("Hava kalitesi verileriyle ilgili sorularınızı sorun — Gemini AI anlık analiz verileriyle yanıtlar.")
+
+    _gemini_key_chat = st.secrets.get("GEMINI_API_KEY", "")
+
+    if not _gemini_key_chat:
+        st.info("Chatbot için Gemini API anahtarı gerekli.")
+    else:
+        # Sohbet geçmişi
+        if "_chat_history" not in st.session_state:
+            st.session_state["_chat_history"] = []
+
+        # Mevcut sohbet geçmişini göster
+        _chat_container = st.container(height=400)
+        with _chat_container:
+            for msg in st.session_state["_chat_history"]:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+        # Kullanıcı girişi (text_input + buton — tab içinde çalışır)
+        _q_col1, _q_col2 = st.columns([5, 1])
+        with _q_col1:
+            user_q = st.text_input(
+                "Sorunuzu yazın",
+                placeholder="Örn: İzmir'de en kirli bölge neresi?",
+                key="chat_input",
+                label_visibility="collapsed",
+            )
+        with _q_col2:
+            send_btn = st.button("Gönder 🚀", use_container_width=True, key="btn_chat_send")
+
+        if send_btn and user_q:
+            # Kullanıcı mesajını kaydet
+            st.session_state["_chat_history"].append({"role": "user", "content": user_q})
+
+            # Veri bağlamı oluştur
+            avg_pm10 = df_scored["pm10"].mean()
+            avg_pm10 = avg_pm10 if pd.notna(avg_pm10) else 0
+            avg_pm25 = df_scored["pm25"].mean() if "pm25" in df_scored else 0
+            avg_so2 = df_scored["so2"].mean() if "so2" in df_scored else 0
+            avg_no2 = df_scored["no2"].mean() if "no2" in df_scored else 0
+
+            top3 = df_scored.nlargest(3, "pollution_score")
+            top3_text = "\n".join(
+                f"  - {r['station_name']}: skor {r['pollution_score']:.3f}, "
+                f"PM10={r['pm10']:.0f}, NO₂={r['no2']:.0f}"
+                for _, r in top3.iterrows()
+            )
+
+            _chat_context = (
+                "Sen AtmoTrace hava kalitesi platformunun AI asistanısın. "
+                "Kullanıcının sorularını aşağıdaki GÜNCEL VERİLERE dayanarak Türkçe yanıtla. "
+                "Kısa, bilgilendirici ve bilimsel ol. Emoji kullanabilirsin.\n\n"
+                f"## GÜNCEL VERİLER ({selected_hour.strftime('%d.%m.%Y %H:%M')}):\n"
+                f"- Şehir: İzmir\n"
+                f"- Analiz edilen istasyon: {len(df_scored)}\n"
+                f"- Ort. PM10: {avg_pm10:.1f} µg/m³\n"
+                f"- Ort. PM2.5: {avg_pm25:.1f} µg/m³\n"
+                f"- Ort. SO₂: {avg_so2:.1f} µg/m³\n"
+                f"- Ort. NO₂: {avg_no2:.1f} µg/m³\n"
+                f"- Kaynak parmak izi: {fingerprint['label']} (güven %{fingerprint['confidence']*100:.0f})\n"
+                f"- Tespit edilen kaynak: {result['source_lat']:.4f}K, {result['source_lon']:.4f}D\n"
+                f"- En yakın bilinen kaynak: {nearest_source['name'] if nearest_source else 'Bilinmiyor'} "
+                f"({nearest_dist:.1f} km)\n"
+                f"- Anomali: {len(anomaly_stations)} istasyonda\n"
+                f"- Sağlık risk: {health['score']}/100 ({health['level']})\n\n"
+                f"## En kirli 3 istasyon:\n{top3_text}\n\n"
+                f"## KULLANICI SORUSU:\n{user_q}"
+            )
+
+            with st.spinner("🧠 Gemini düşünüyor..."):
+                answer = gemini_interpret(_chat_context, _gemini_key_chat)
+
+            if answer:
+                st.session_state["_chat_history"].append({"role": "assistant", "content": answer})
+            else:
+                st.session_state["_chat_history"].append({
+                    "role": "assistant",
+                    "content": "Şu an yanıt üretemiyorum — lütfen biraz sonra tekrar deneyin.",
+                })
+            st.rerun()
+
+        st.caption("Powered by Google Gemini 2.5 Flash")
 
 # =========================================================================== #
 #  TAB 2 — Metodoloji (Akademik & Vizyoner Sürüm)
@@ -1257,6 +1524,21 @@ OSB'ler, Limanlar) karşılaştırılır. 5 km çapındaki bir eşleşme **Yüks
 15 km çapındaki bir eşleşme ise **Olası Uyum** olarak raporlanır.
 """)
 
+    st.subheader("6. Yapay Zekâ ve Makine Öğrenmesi Katmanı")
+    st.markdown("""
+Fiziksel modelin üzerine 7 ayrı AI/ML modülü entegre edilmiştir:
+
+| Modül | Yöntem | Çıktı |
+|-------|--------|-------|
+| **Kirlilik Tahmini** | Holt Doğrusal Üstel Düzleştirme | 24 saatlik PM10/NO₂ öngörüsü |
+| **Kaynak Parmak İzi** | Kural Tabanlı Karar Ağacı | SO₂/NO₂ ve PM oranlarından kaynak sınıflandırma |
+| **Anomali Tespiti** | Isolation Forest | Olağandışı kirlilik örüntüsü gösteren istasyonlar |
+| **İstasyon Kümeleme** | K-Means (StandardScaler + k=3) | Benzer profildeki istasyon grupları |
+| **Sağlık Risk Skoru** | WHO Limit Ağırlıklı Bileşik Skor | 0-100 arası risk endeksi + öneri sistemi |
+| **Korelasyon Analizi** | Pearson Korelasyonu + AI Yorum | Ortak kaynak tespiti için kirletici ilişki matrisi |
+| **Üretken AI Rapor** | Google Gemini 2.5 Flash (LLM) | Doğal dil yönetici özet raporu + sohbet asistanı |
+""")
+
     st.divider()
 
     # Burası Jürinin en çok seveceği "Biz eksikliklerin farkındayız ve vizyonumuz geniş" kısmı
@@ -1318,6 +1600,7 @@ Böylece tahmine dayalı, yavaş denetimlerin yerini; **matematiksel kanıtlara 
 | **Ön Yüz (UI)** | Streamlit + Folium                            | İnteraktif ısı haritası ve dashboard    |
 | **Veri & API** | CSB + Open-Meteo API                      | Anlık/Tarihsel kirlilik ve rüzgâr akışı |
 | **Analitik** | Python (NumPy, SciPy, Pandas)                 | Uzamsal grid hesaplama, Gaussian Model  |
+| **AI/ML** | scikit-learn + Google Gemini 2.5 Flash        | K-Means, Isolation Forest, LLM Rapor & Chatbot |
 | **Görselleştirme**| Plotly                                       | İstatistiksel zaman serisi, rüzgâr gülü |
 | **Matematik** | Küresel Trigonometri                          | Haversine tabanlı yörünge vektör hesabı |
 """)
@@ -1331,9 +1614,19 @@ Böylece tahmine dayalı, yavaş denetimlerin yerini; **matematiksel kanıtlara 
 #  Alt Bilgi
 # =========================================================================== #
 st.divider()
-st.caption(
-    "AtmoTrace MVP | İklim için Dijital Dönüşüm Ideathon'u 2026 "
-)
+_footer_cols = st.columns([2, 1])
+with _footer_cols[0]:
+    st.markdown(
+        "**AtmoTrace MVP** — Kirletici Kaynak Tespit Platformu  \n"
+        "Veri: T.C. ÇŞİDB (CSB) + Open-Meteo | "
+        "AI: Google Gemini 2.5 Flash + scikit-learn  \n"
+        "Stack: Python · Streamlit · Folium · Plotly · NumPy · SciPy"
+    )
+with _footer_cols[1]:
+    st.markdown(
+        "**🏆 İklim için Dijital Dönüşüm Ideathon'u 2026**  \n"
+        "Takım: **AtmoTrace**"
+    )
 
 # =========================================================================== #
 #  Animasyon döngüsü (en sonda çalışır — render bittikten sonra)
