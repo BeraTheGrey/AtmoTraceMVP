@@ -13,7 +13,7 @@ import folium
 import math
 import time
 import io
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 from data_engine import load_station_snapshot, get_available_hours, load_all_data
@@ -378,25 +378,6 @@ with tab_analiz:
             value=f"{result['n_contributing']} istasyon",
         )
 
-        # --- Kaynak Parmak İzi (AI) ---
-        st.divider()
-        st.subheader("🔬 Kaynak Parmak İzi")
-        fp_col1, fp_col2 = st.columns([2, 1])
-        with fp_col1:
-            st.markdown(
-                f"<span style='font-size:1.6em'>{fingerprint['icon']}</span> "
-                f"**{fingerprint['label']}**",
-                unsafe_allow_html=True,
-            )
-            st.caption(fingerprint["desc"])
-        with fp_col2:
-            st.metric("Güven", f"%{fingerprint['confidence']*100:.0f}")
-        st.markdown(
-            f"<small>SO₂/NO₂: <b>{fingerprint['ratios']['SO₂/NO₂']}</b> · "
-            f"PM2.5/PM10: <b>{fingerprint['ratios']['PM2.5/PM10']}</b></small>",
-            unsafe_allow_html=True,
-        )
-
         st.divider()
         st.subheader("\U0001F4A8 Yörünge Özeti")
 
@@ -432,7 +413,7 @@ with tab_analiz:
         ).add_to(m)
 
         # Canlı trafik katmanı (Google Maps overlay)
-        _traffic_time = datetime.now().strftime("%H:%M")
+        _traffic_time = datetime.now(timezone(timedelta(hours=3))).strftime("%H:%M")
         folium.TileLayer(
             tiles='https://mt1.google.com/vt/lyrs=h,traffic&x={x}&y={y}&z={z}',
             name=f'🚗 Canlı Trafik (anlık {_traffic_time})',
@@ -621,6 +602,94 @@ with tab_analiz:
             height=640,
             returned_objects=[],
             key="main_map",
+        )
+
+    # --- Kaynak Parmak İzi (Harita Altı Detaylı Panel) ---
+    st.divider()
+    st.subheader("🔬 Kaynak Parmak İzi Analizi")
+
+    fp_label = fingerprint["label"]
+    fp_conf = fingerprint["confidence"]
+    fp_icon = fingerprint["icon"]
+    fp_desc = fingerprint["desc"]
+    fp_so2_no2 = fingerprint["ratios"]["SO₂/NO₂"]
+    fp_pm_ratio = fingerprint["ratios"]["PM2.5/PM10"]
+
+    # Kaynak türüne göre detaylı açıklamalar
+    _fp_details = {
+        "Sanayi (Ağır)": {
+            "method": "SO₂/NO₂ oranı **> 2.0** ve PM10 **> 60 µg/m³** tespit edildi.",
+            "meaning": (
+                "Yüksek kükürt dioksit, ağır sanayi tesislerinin (rafineri, demir-çelik, "
+                "termik santral) karakteristik imzasıdır. SO₂ fosil yakıtlardaki kükürdün "
+                "yanmasıyla oluşur; bu seviye endüstriyel bir noktasal kaynağa işaret eder."
+            ),
+            "health": "Solunum yolu hastalıkları, astım krizleri, asit yağmuru riski.",
+        },
+        "Sanayi (Hafif)": {
+            "method": "SO₂/NO₂ oranı **> 1.0** ve PM10 **> 40 µg/m³** tespit edildi.",
+            "meaning": (
+                "Orta düzey SO₂ ve partikül madde, organize sanayi bölgeleri veya küçük-orta "
+                "ölçekli imalat tesislerinden kaynaklanan emisyonlara işaret eder."
+            ),
+            "health": "Uzun süreli maruziyette kronik solunum problemleri.",
+        },
+        "Trafik": {
+            "method": "NO₂ **> 30 µg/m³**, CO **> 500 µg/m³** ve SO₂/NO₂ oranı **< 0.8** tespit edildi.",
+            "meaning": (
+                "Yüksek azot dioksit ve karbon monoksit, motorlu taşıt emisyonlarının "
+                "karakteristik imzasıdır. Dizel araçlar özellikle yüksek NO₂ üretir; "
+                "bu profil yoğun karayolu veya liman trafiğine işaret eder."
+            ),
+            "health": "Astım alevlenmesi, kardiyovasküler hastalık riski.",
+        },
+        "Doğal / Arka Plan": {
+            "method": "PM10 **< 30**, SO₂ **< 10**, NO₂ **< 15 µg/m³** — tüm değerler düşük.",
+            "meaning": (
+                "Antropojenik (insan kaynaklı) belirgin bir emisyon tespit edilmedi. "
+                "Mevcut kirlilik; toz, deniz tuzu, biyojenik kaynaklar veya uzun mesafe "
+                "taşınım gibi doğal arka plan seviyelerinden oluşuyor."
+            ),
+            "health": "Düşük risk — WHO yıllık limit değerleri dahilinde.",
+        },
+        "Karma": {
+            "method": "Kirletici oranları belirgin bir tek kaynağa uymadı.",
+            "meaning": (
+                "Birden fazla kaynak türünün (sanayi + trafik + ısınma vb.) eş zamanlı "
+                "katkı yaptığı karma bir kirlilik profili. Şehir merkezlerinde ve rüzgâr "
+                "geçiş bölgelerinde sıkça görülür."
+            ),
+            "health": "Kaynak ayrıştırması için ileri düzey analiz gerekebilir.",
+        },
+    }
+    detail = _fp_details.get(fp_label, _fp_details["Karma"])
+
+    # Üst satır: sonuç kartı
+    fp_c1, fp_c2, fp_c3 = st.columns([1, 1, 1])
+    with fp_c1:
+        st.markdown(
+            f"<div style='text-align:center'>"
+            f"<span style='font-size:3em'>{fp_icon}</span><br>"
+            f"<b style='font-size:1.3em'>{fp_label}</b></div>",
+            unsafe_allow_html=True,
+        )
+    with fp_c2:
+        st.metric("Güven Skoru", f"%{fp_conf*100:.0f}")
+        st.caption("Kural tabanlı karar ağacı çıktısı")
+    with fp_c3:
+        st.metric("SO₂ / NO₂", fp_so2_no2)
+        st.metric("PM2.5 / PM10", fp_pm_ratio)
+
+    # Açıklama expander
+    with st.expander("📖 Nasıl Tespit Edildi? — Detaylı Açıklama", expanded=True):
+        st.markdown(f"**Karar Kriteri:** {detail['method']}")
+        st.markdown(f"**Ne Anlama Geliyor?** {detail['meaning']}")
+        st.markdown(f"**Sağlık Etkisi:** {detail['health']}")
+        st.info(
+            "💡 **Yöntem:** Kirletici oranları (SO₂/NO₂, PM2.5/PM10) kullanılarak "
+            "kural tabanlı karar ağacı ile kaynak türü sınıflandırması yapılmaktadır. "
+            "Her kaynak türü kendine özgü bir kimyasal imza bırakır — bu imza "
+            "\"parmak izi\" olarak adlandırılır."
         )
 
     # --- Rapor İndirme → Sidebar ---
@@ -1052,12 +1121,36 @@ with tab_analiz:
         # Gemini API anahtarını al
         gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 
+        # Cache key: aynı saat seçiliyken Gemini'ye tekrar istek gitmez (429 koruması)
+        _cache_key = selected_hour.isoformat()
+        _cached = st.session_state.get("_gemini_cache", {})
+
         report_text = ""
         used_gemini = False
 
-        if gemini_key:
-            with st.spinner("🧠 Gemini AI rapor üretiyor..."):
-                report_text = generate_executive_report_gemini(
+        if _cached.get("hour") == _cache_key and _cached.get("text"):
+            report_text = _cached["text"]
+            used_gemini = _cached.get("gemini", False)
+        else:
+            if gemini_key:
+                with st.spinner("🧠 Gemini AI rapor üretiyor..."):
+                    report_text = generate_executive_report_gemini(
+                        selected_hour=selected_hour,
+                        result=result,
+                        df_scored=df_scored,
+                        nearest_source=nearest_source,
+                        nearest_dist=nearest_dist,
+                        fingerprint=fingerprint,
+                        anomaly_count=len(anomaly_stations),
+                        forecast_df=fc_for_report,
+                        api_key=gemini_key,
+                    )
+                    if report_text:
+                        used_gemini = True
+
+            # Fallback: Gemini başarısız olursa şablon rapor
+            if not report_text:
+                report_text = generate_executive_report(
                     selected_hour=selected_hour,
                     result=result,
                     df_scored=df_scored,
@@ -1066,33 +1159,27 @@ with tab_analiz:
                     fingerprint=fingerprint,
                     anomaly_count=len(anomaly_stations),
                     forecast_df=fc_for_report,
-                    api_key=gemini_key,
                 )
-                if report_text:
-                    used_gemini = True
 
-        # Fallback: Gemini başarısız olursa şablon rapor
-        if not report_text:
-            report_text = generate_executive_report(
-                selected_hour=selected_hour,
-                result=result,
-                df_scored=df_scored,
-                nearest_source=nearest_source,
-                nearest_dist=nearest_dist,
-                fingerprint=fingerprint,
-                anomaly_count=len(anomaly_stations),
-                forecast_df=fc_for_report,
-            )
+            # Sonucu cache'le
+            st.session_state["_gemini_cache"] = {
+                "hour": _cache_key,
+                "text": report_text,
+                "gemini": used_gemini,
+            }
 
-        # Daktilo efekti
+        # Daktilo efekti (sadece yeni rapor üretildiyse)
         report_placeholder = st.empty()
-        displayed = ""
-        words = report_text.split(" ")
-        for i, word in enumerate(words):
-            displayed += word + " "
-            if i % 3 == 0 or i == len(words) - 1:
-                report_placeholder.markdown(displayed)
-                time.sleep(0.03)
+        if _cached.get("hour") != _cache_key:
+            displayed = ""
+            words = report_text.split(" ")
+            for i, word in enumerate(words):
+                displayed += word + " "
+                if i % 3 == 0 or i == len(words) - 1:
+                    report_placeholder.markdown(displayed)
+                    time.sleep(0.03)
+        else:
+            report_placeholder.markdown(report_text)
 
         if used_gemini:
             st.success("✅ Rapor Gemini AI tarafından üretildi.")
