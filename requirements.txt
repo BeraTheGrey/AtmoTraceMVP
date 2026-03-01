@@ -6,3 +6,4 @@ numpy>=2.3.0
 scipy>=1.16.0
 requests>=2.32.0
 plotly>=6.0.0
+scikit-learn>=1.6.0

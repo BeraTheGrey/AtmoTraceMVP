@@ -49,12 +49,14 @@ def get_available_hours(df: pd.DataFrame | None = None) -> list[datetime]:
 
 def load_station_snapshot(
     target_time: datetime | None = None,
+    all_data: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Belirli bir saat icin istasyon bazinda tek satirlik ozet verir.
 
     Args:
         target_time: Istenilen saat (None ise en son mevcut saat).
+        all_data:    Onceden yuklenmis DataFrame (None ise CSV'den okur).
 
     Returns:
         pd.DataFrame: Her istasyon icin tek satir:
@@ -62,7 +64,7 @@ def load_station_snapshot(
             - pm10, pm25, so2, no2, co, o3  (CSB gercek verisi)
             - wind_speed (m/s), wind_dir (derece)  (Open-Meteo gercek verisi)
     """
-    df = load_all_data()
+    df = all_data if all_data is not None else load_all_data()
 
     if target_time is None:
         target_time = df["timestamp"].max()

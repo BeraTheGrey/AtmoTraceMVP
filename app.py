@@ -20,6 +20,10 @@ from data_engine import load_station_snapshot, get_available_hours, load_all_dat
 from analytics import find_source, compute_station_scores
 import plotly.express as px
 import plotly.graph_objects as go
+from ai_engine import (
+    forecast_pollution, classify_source, detect_anomalies,
+    generate_executive_report,
+)
 
 # =========================================================================== #
 #  Bilinen Emisyon Kaynakları (İzmir)
@@ -229,9 +233,17 @@ st.caption(
 )
 
 # =========================================================================== #
+#  Veri Yükleme (session state veya CSV)
+# =========================================================================== #
+if "fresh_df" in st.session_state:
+    _all_data = st.session_state["fresh_df"]
+else:
+    _all_data = load_all_data()
+
+# =========================================================================== #
 #  Sidebar (saat seçimi + animasyon)
 # =========================================================================== #
-hours = get_available_hours()
+hours = get_available_hours(_all_data)
 
 if "playing" not in st.session_state:
     st.session_state.playing = False
@@ -273,6 +285,33 @@ with st.sidebar:
         format_func=lambda x: f"{x}x",
     )
 
+    st.divider()
+    st.subheader("🔄 Veri Güncelleme")
+    if st.button("🔄 CSB'den Güncel Veri Çek", use_container_width=True, key="btn_refresh"):
+        with st.status("Veri güncelleniyor...", expanded=True) as status:
+            from csb_veri_indirme import download_fresh_data
+
+            def _progress(step, total, msg):
+                status.update(label=f"[{step}/{total}] {msg}")
+
+            fresh_df = download_fresh_data(days=7, progress_callback=_progress)
+            if fresh_df is not None and not fresh_df.empty:
+                st.session_state["fresh_df"] = fresh_df
+                st.session_state.playing = False
+                status.update(label="✅ Veri başarıyla güncellendi!", state="complete")
+                time.sleep(1.5)
+                st.rerun()
+            else:
+                status.update(label="❌ Veri güncellenemedi! API'ye erişilemiyor olabilir.", state="error")
+    if "fresh_df" in st.session_state:
+        _ts = _all_data["timestamp"]
+        st.caption(
+            f"🟢 Güncel veri: "
+            f"{_ts.min().strftime('%d.%m.%Y')} – {_ts.max().strftime('%d.%m.%Y')}"
+        )
+    else:
+        st.caption("📂 CSV dosyasından veri okunuyor")
+
 # =========================================================================== #
 #  Sekmeler
 # =========================================================================== #
@@ -286,9 +325,23 @@ tab_analiz, tab_metod, tab_hakkinda = st.tabs(
 with tab_analiz:
 
     # Analiz
-    df = load_station_snapshot(target_time=selected_hour)
+    df = load_station_snapshot(target_time=selected_hour, all_data=_all_data)
     df_scored = compute_station_scores(df)
     result = find_source(df)
+
+    # --- AI/ML Analizleri ---
+    df_anomaly = detect_anomalies(df_scored)
+    anomaly_stations = df_anomaly[df_anomaly["anomaly"] == -1]
+    fingerprint = classify_source(df_scored)
+
+    # Anomali uyarısı (varsa)
+    if len(anomaly_stations) > 0:
+        anomaly_names = ", ".join(anomaly_stations["station_name"].tolist())
+        st.warning(
+            f"⚠️ **Isolation Forest Anomali Tespiti:** "
+            f"**{len(anomaly_stations)} istasyonda** olağandışı kirlilik "
+            f"örüntüsü algılandı → {anomaly_names}"
+        )
 
     # Yakınlık analizi
     nearest_source = None
@@ -314,6 +367,25 @@ with tab_analiz:
         st.metric(
             label="\U0001F4CA Analiz Edilen İstasyon",
             value=f"{result['n_contributing']} istasyon",
+        )
+
+        # --- Kaynak Parmak İzi (AI) ---
+        st.divider()
+        st.subheader("🔬 Kaynak Parmak İzi")
+        fp_col1, fp_col2 = st.columns([2, 1])
+        with fp_col1:
+            st.markdown(
+                f"<span style='font-size:1.6em'>{fingerprint['icon']}</span> "
+                f"**{fingerprint['label']}**",
+                unsafe_allow_html=True,
+            )
+            st.caption(fingerprint["desc"])
+        with fp_col2:
+            st.metric("Güven", f"%{fingerprint['confidence']*100:.0f}")
+        st.markdown(
+            f"<small>SO₂/NO₂: <b>{fingerprint['ratios']['SO₂/NO₂']}</b> · "
+            f"PM2.5/PM10: <b>{fingerprint['ratios']['PM2.5/PM10']}</b></small>",
+            unsafe_allow_html=True,
         )
 
         st.divider()
@@ -627,7 +699,7 @@ with tab_analiz:
     st.divider()
     st.subheader("\U0001F4C8 İstatistik Paneli")
 
-    all_df = load_all_data()
+    all_df = _all_data
 
     POLLUTANTS = {
         "pm10":  {"label": "PM10",  "unit": "\u00B5g/m\u00B3", "color": "#1565C0"},
@@ -720,6 +792,38 @@ with tab_analiz:
             st.plotly_chart(fig_ts, use_container_width=True)
         else:
             st.warning(f"{poll_info['label']} için yeterli veri bulunamadı.")
+
+    # --- 1b) 24 Saatlik AI Tahmin ---
+    with chart_col1:
+        fc_df = forecast_pollution(all_df, pollutant=sel_poll, horizon=24)
+        if not fc_df.empty:
+            with st.expander(f"🤖 24 Saatlik {poll_info['label']} Tahmini (AI)", expanded=False):
+                fig_fc = go.Figure()
+                # Belirsizlik bandı
+                fig_fc.add_trace(go.Scatter(
+                    x=fc_df["timestamp"], y=fc_df["üst"],
+                    mode="lines", line=dict(width=0), showlegend=False,
+                ))
+                fig_fc.add_trace(go.Scatter(
+                    x=fc_df["timestamp"], y=fc_df["alt"],
+                    mode="lines", line=dict(width=0), fill="tonexty",
+                    fillcolor="rgba(255,152,0,0.15)", showlegend=False,
+                ))
+                # Tahmin çizgisi
+                fig_fc.add_trace(go.Scatter(
+                    x=fc_df["timestamp"], y=fc_df["tahmin"],
+                    mode="lines+markers",
+                    name="AI Tahmin",
+                    line=dict(color="#FF6F00", width=2.5),
+                    marker=dict(size=4),
+                ))
+                fig_fc.update_layout(
+                    height=250, margin=dict(l=0, r=0, t=25, b=0),
+                    yaxis_title=f"{poll_info['label']} ({poll_info['unit']})",
+                    legend=dict(orientation="h", y=-0.2),
+                )
+                st.plotly_chart(fig_fc, use_container_width=True)
+                st.caption("Yöntem: Holt doğrusal üstel düzleştirme · Gri bant: belirsizlik aralığı")
 
     # --- 2) Rüzgâr Gülü ---
     with chart_col2:
@@ -819,6 +923,42 @@ with tab_analiz:
         top5["Saat"] = top5["Saat"].dt.strftime("%d %b %Y  %H:%M")
         top5.iloc[:, 1] = top5.iloc[:, 1].round(1)
         st.dataframe(top5, use_container_width=True, hide_index=True)
+
+    # ================================================================== #
+    #  AI Yönetici Raporu (Mock LLM + Daktilo Efekti)
+    # ================================================================== #
+    st.divider()
+    st.subheader("🤖 AI Yönetici Raporu")
+    st.caption("Üretken yapay zekâ ile anlık durum özeti — tüm analiz sonuçlarını tek raporda birleştirir.")
+
+    if st.button("📝 Rapor Üret", use_container_width=True, key="btn_ai_report"):
+        # Tahmin verisini hazırla
+        fc_for_report = forecast_pollution(all_df, pollutant="pm10", horizon=24)
+
+        report_text = generate_executive_report(
+            selected_hour=selected_hour,
+            result=result,
+            df_scored=df_scored,
+            nearest_source=nearest_source,
+            nearest_dist=nearest_dist,
+            fingerprint=fingerprint,
+            anomaly_count=len(anomaly_stations),
+            forecast_df=fc_for_report,
+        )
+
+        # Daktilo efekti
+        report_placeholder = st.empty()
+        displayed = ""
+        # Kelime kelime yaz (hız: ~60 kelime/saniye)
+        words = report_text.split(" ")
+        for i, word in enumerate(words):
+            displayed += word + " "
+            # Her 3 kelimede bir güncelle (performans için)
+            if i % 3 == 0 or i == len(words) - 1:
+                report_placeholder.markdown(displayed)
+                time.sleep(0.03)
+
+        st.success("✅ Rapor üretimi tamamlandı.")
 
 # =========================================================================== #
 #  TAB 2 — Metodoloji (Akademik & Vizyoner Sürüm)

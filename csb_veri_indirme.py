@@ -38,8 +38,8 @@ IZMIR_CITY_ID = "4b6e3556-15bc-410b-99af-627aeb67f05f"
 # Indirilecek parametreler
 PARAMETERS = ["PM10", "PM25", "SO2", "NO2", "CO", "O3"]
 
-# Tarih araligi: son 7 gun (bugun haric, verilerin tamamlanmis olmasi icin)
-END_DATE = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+# Tarih araligi: son 7 gun (bugun dahil — API mevcut saatleri dondurur)
+END_DATE = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 START_DATE = END_DATE - timedelta(days=6)
 
 # Tek istekte max gun sayisi (API limiti icin parcala)
@@ -218,7 +218,7 @@ def download_fresh_data(days=7, progress_callback=None):
     """
     import pathlib
 
-    end_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+    end_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     start_date = end_date - timedelta(days=days - 1)
 
     def _notify(step, total, msg):
@@ -258,7 +258,7 @@ def download_fresh_data(days=7, progress_callback=None):
         wind_df = fetch_wind_data(stations, start_date, end_date)
 
         # 5. Birlestir ve kaydet
-        _notify(5, 5, "Veriler birleştiriliyor ve kaydediliyor...")
+        _notify(5, 5, "Veriler birleştiriliyor...")
         df = pd.DataFrame(all_rows)
         df["ReadTime"] = pd.to_datetime(df["ReadTime"])
 
@@ -288,12 +288,16 @@ def download_fresh_data(days=7, progress_callback=None):
         cols.extend(["wind_speed", "wind_dir"])
         df = df[cols]
 
-        project_dir = pathlib.Path(__file__).resolve().parent
-        filename = f"izmir_hava_kalitesi_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
-        filepath = project_dir / filename
-        df.to_csv(filepath, index=False, encoding="utf-8-sig")
+        # CSV'ye kaydet (Cloud ortamında dosya sistemi salt okunur olabilir)
+        try:
+            project_dir = pathlib.Path(__file__).resolve().parent
+            filename = f"izmir_hava_kalitesi_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
+            filepath = project_dir / filename
+            df.to_csv(filepath, index=False, encoding="utf-8-sig")
+        except OSError:
+            pass  # Cloud ortamında CSV yazılamayabilir — DataFrame bellekte döner
 
-        return str(filepath)
+        return df
 
     except Exception:
         return None
