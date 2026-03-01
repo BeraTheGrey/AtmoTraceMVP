@@ -431,6 +431,18 @@ with tab_analiz:
             max_zoom=19
         ).add_to(m)
 
+        # Canlı trafik katmanı (Google Maps overlay)
+        _traffic_time = datetime.now().strftime("%H:%M")
+        folium.TileLayer(
+            tiles='https://mt1.google.com/vt/lyrs=h,traffic&x={x}&y={y}&z={z}',
+            name=f'🚗 Canlı Trafik (anlık {_traffic_time})',
+            attr='© Google',
+            max_zoom=19,
+            overlay=True,
+            control=True,
+            show=False,
+        ).add_to(m)
+
         # Bilinen emisyon kaynakları — statik katman
         # ... (Kodunun geri kalanı aynı şekilde devam ediyor) ...
         known_group = folium.FeatureGroup(
@@ -934,6 +946,99 @@ with tab_analiz:
         st.dataframe(top5, use_container_width=True, hide_index=True)
 
     # ================================================================== #
+    #  Rush Hour NO₂ Korelasyonu — Trafik Kaynak Analizi
+    # ================================================================== #
+    st.divider()
+    st.subheader("🚗 Rush Hour NO₂ Analizi — Trafik Kaynak Korelasyonu")
+    st.caption("Trafiğin yoğun olduğu zirve saatlerde (07:00–09:30, 17:00–19:30) NO₂ seviyesinin günün geri kalanıyla karşılaştırması.")
+
+    if "no2" in all_df.columns and "timestamp" in all_df.columns:
+        _rh_df = all_df[["timestamp", "no2"]].dropna(subset=["no2"]).copy()
+        _rh_df["hour"] = _rh_df["timestamp"].dt.hour
+        _rh_df["minute"] = _rh_df["timestamp"].dt.minute
+        _rh_df["time_min"] = _rh_df["hour"] * 60 + _rh_df["minute"]
+
+        # Rush hour: 07:00-09:30 (420-570 dk) ve 17:00-19:30 (1020-1170 dk)
+        _rh_df["period"] = _rh_df["time_min"].apply(
+            lambda t: "Zirve Saat (Rush Hour)"
+            if (420 <= t <= 570) or (1020 <= t <= 1170)
+            else "Diğer Saatler"
+        )
+
+        rush_mean = _rh_df.loc[_rh_df["period"] == "Zirve Saat (Rush Hour)", "no2"].mean()
+        other_mean = _rh_df.loc[_rh_df["period"] == "Diğer Saatler", "no2"].mean()
+        rush_mean = rush_mean if pd.notna(rush_mean) else 0
+        other_mean = other_mean if pd.notna(other_mean) else 0
+
+        rh_col1, rh_col2 = st.columns([2, 3])
+
+        with rh_col1:
+            delta_pct = ((rush_mean - other_mean) / other_mean * 100) if other_mean > 0 else 0
+            st.metric(
+                "Zirve Saat NO₂ Ortalaması",
+                f"{rush_mean:.1f} µg/m³",
+                delta=f"{delta_pct:+.1f}% fark",
+                delta_color="inverse",
+            )
+            st.metric(
+                "Diğer Saatler NO₂ Ortalaması",
+                f"{other_mean:.1f} µg/m³",
+            )
+
+            # Trafik kaynak uyarısı
+            if delta_pct > 15:
+                st.error(
+                    f"🚨 **Trafik/Ulaşım Kaynaklı Olma İhtimali Yüksek** — "
+                    f"Zirve saatlerde NO₂ %{delta_pct:.0f} daha yüksek."
+                )
+            elif delta_pct > 5:
+                st.warning(
+                    f"⚠️ **Trafik Etkisi Olası** — "
+                    f"Zirve saatlerde NO₂ %{delta_pct:.0f} daha yüksek."
+                )
+            else:
+                st.info(
+                    "ℹ️ Zirve saat NO₂ farkı düşük — "
+                    "trafik baskın kaynak olarak görünmüyor."
+                )
+
+        with rh_col2:
+            # Saatlik NO₂ profili — bar chart
+            hourly_no2 = (
+                _rh_df.groupby("hour")["no2"]
+                .mean()
+                .reset_index()
+            )
+            hourly_no2.columns = ["Saat", "NO₂"]
+
+            # Rush hour saatlerini renklendir
+            hourly_no2["Dönem"] = hourly_no2["Saat"].apply(
+                lambda h: "Zirve Saat" if h in [7, 8, 9, 17, 18, 19] else "Diğer"
+            )
+
+            fig_rh = px.bar(
+                hourly_no2,
+                x="Saat",
+                y="NO₂",
+                color="Dönem",
+                color_discrete_map={
+                    "Zirve Saat": "#D84315",
+                    "Diğer": "#90A4AE",
+                },
+                labels={"NO₂": "NO₂ (µg/m³)", "Saat": "Saat (0–23)"},
+            )
+            fig_rh.update_layout(
+                height=280,
+                margin=dict(l=0, r=0, t=30, b=0),
+                xaxis=dict(dtick=1),
+                legend=dict(orientation="h", y=-0.2),
+                bargap=0.15,
+            )
+            st.plotly_chart(fig_rh, use_container_width=True)
+    else:
+        st.info("NO₂ verisi mevcut değil — trafik analizi yapılamadı.")
+
+    # ================================================================== #
     #  AI Yönetici Raporu (Gemini + Fallback Şablon + Daktilo Efekti)
     # ================================================================== #
     st.divider()
@@ -991,6 +1096,7 @@ with tab_analiz:
 
         if used_gemini:
             st.success("✅ Rapor Gemini AI tarafından üretildi.")
+            st.caption("Powered by Google Gemini 2.0 Flash")
         else:
             st.success("✅ Rapor üretimi tamamlandı (şablon modu).")
 
