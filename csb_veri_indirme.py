@@ -299,7 +299,9 @@ def download_fresh_data(days=7, progress_callback=None):
 
         return df
 
-    except Exception:
+    except Exception as e:
+        if progress_callback:
+            progress_callback(-1, 5, str(e))
         return None
 
 

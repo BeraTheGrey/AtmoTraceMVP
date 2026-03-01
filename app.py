@@ -291,18 +291,27 @@ with st.sidebar:
         with st.status("Veri güncelleniyor...", expanded=True) as status:
             from csb_veri_indirme import download_fresh_data
 
+            error_detail = [None]
+
             def _progress(step, total, msg):
-                status.update(label=f"[{step}/{total}] {msg}")
+                if step == -1:
+                    error_detail[0] = msg
+                else:
+                    status.update(label=f"[{step}/{total}] {msg}")
+                    st.write(f"**Adım {step}/{total}:** {msg}")
 
             fresh_df = download_fresh_data(days=7, progress_callback=_progress)
             if fresh_df is not None and not fresh_df.empty:
                 st.session_state["fresh_df"] = fresh_df
                 st.session_state.playing = False
+                st.write(f"✅ {len(fresh_df)} satır veri yüklendi.")
                 status.update(label="✅ Veri başarıyla güncellendi!", state="complete")
                 time.sleep(1.5)
                 st.rerun()
             else:
-                status.update(label="❌ Veri güncellenemedi! API'ye erişilemiyor olabilir.", state="error")
+                err = error_detail[0] or "API'ye erişilemiyor olabilir."
+                st.error(f"Hata detayı: {err}")
+                status.update(label="❌ Veri güncellenemedi!", state="error")
     if "fresh_df" in st.session_state:
         _ts = _all_data["timestamp"]
         st.caption(
