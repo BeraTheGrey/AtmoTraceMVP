@@ -38,9 +38,10 @@ IZMIR_CITY_ID = "4b6e3556-15bc-410b-99af-627aeb67f05f"
 # Indirilecek parametreler
 PARAMETERS = ["PM10", "PM25", "SO2", "NO2", "CO", "O3"]
 
-# Tarih araligi: son 7 gun (bugun dahil — API mevcut saatleri dondurur)
-END_DATE = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-START_DATE = END_DATE - timedelta(days=6)
+# Tarih araligi: son 7 gun, saat bazli (guncel saate gore)
+# Ornek: 1 Mart 18:47'de calistirilirsa → 22 Subat 19:00 – 1 Mart 18:00
+END_DATE = datetime.now().replace(minute=0, second=0, microsecond=0)
+START_DATE = END_DATE - timedelta(hours=7 * 24 - 1)
 
 # Tek istekte max gun sayisi (API limiti icin parcala)
 CHUNK_DAYS = 7
@@ -130,8 +131,8 @@ def fetch_hourly_data(session, token, station_ids, parameters, start_dt, end_dt)
         parts.append(f"StationIds={sid}")
     for param in parameters:
         parts.append(f"Parameters={param}")
-    parts.append(f"StartDateTime={start_dt.strftime('%Y-%m-%d')}+00%3A00")
-    parts.append(f"EndDateTime={end_dt.strftime('%Y-%m-%d')}+23%3A00")
+    parts.append(f"StartDateTime={start_dt.strftime('%Y-%m-%d')}+{start_dt.strftime('%H')}%3A00")
+    parts.append(f"EndDateTime={end_dt.strftime('%Y-%m-%d')}+{end_dt.strftime('%H')}%3A00")
     parts.append("DataPeriods=8")  # 8 = saatlik
 
     payload = "&".join(parts)
@@ -218,8 +219,8 @@ def download_fresh_data(days=7, progress_callback=None):
     """
     import pathlib
 
-    end_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    start_date = end_date - timedelta(days=days - 1)
+    end_date = datetime.now().replace(minute=0, second=0, microsecond=0)
+    start_date = end_date - timedelta(hours=days * 24 - 1)
 
     def _notify(step, total, msg):
         if progress_callback:
@@ -241,13 +242,13 @@ def download_fresh_data(days=7, progress_callback=None):
         all_rows = []
         current_start = start_date
         while current_start <= end_date:
-            current_end = min(current_start + timedelta(days=CHUNK_DAYS - 1), end_date)
+            current_end = min(current_start + timedelta(days=CHUNK_DAYS) - timedelta(hours=1), end_date)
             rows = fetch_hourly_data(
                 session, token, station_ids, PARAMETERS,
                 current_start, current_end,
             )
             all_rows.extend(rows)
-            current_start = current_end + timedelta(days=1)
+            current_start = current_end + timedelta(hours=1)
             time.sleep(1)
 
         if not all_rows:
@@ -327,15 +328,15 @@ def main():
     print("      CSRF token alindi.")
 
     # 3. CSB kirlilik verisini cek
-    print(f"[3/5] CSB kirlilik verisi indiriliyor: {START_DATE.date()} -> {END_DATE.date()}")
+    print(f"[3/5] CSB kirlilik verisi indiriliyor: {START_DATE} -> {END_DATE}")
     print(f"      Parametreler: {', '.join(PARAMETERS)}")
 
     all_rows = []
     current_start = START_DATE
 
     while current_start <= END_DATE:
-        current_end = min(current_start + timedelta(days=CHUNK_DAYS - 1), END_DATE)
-        print(f"      {current_start.date()} - {current_end.date()} ...", end=" ")
+        current_end = min(current_start + timedelta(days=CHUNK_DAYS) - timedelta(hours=1), END_DATE)
+        print(f"      {current_start} - {current_end} ...", end=" ")
 
         rows = fetch_hourly_data(
             session, token, station_ids, PARAMETERS,
@@ -344,7 +345,7 @@ def main():
         print(f"{len(rows)} satir")
         all_rows.extend(rows)
 
-        current_start = current_end + timedelta(days=1)
+        current_start = current_end + timedelta(hours=1)
         time.sleep(1)  # API'yi yormamak icin
 
     if not all_rows:
