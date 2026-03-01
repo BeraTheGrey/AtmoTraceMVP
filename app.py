@@ -1685,6 +1685,14 @@ Böylece tahmine dayalı, yavaş denetimlerin yerini; **matematiksel kanıtlara 
         "**Tuba Köten**  \n"
         "[![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat&logo=linkedin&logoColor=white)](http://www.linkedin.com/in/tubak%C3%B6ten742)"
     )
+    st.markdown(
+        "**Atakan Tatar**  \n"
+        "[![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/atakan-tatar-600284297/)"
+    )
+    st.markdown(
+        "**Abdullah Önder Aksu**  \n"
+        "[![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/abdullah-%C3%B6nder-aksu/)"
+    )
     st.caption("İklim için Dijital Dönüşüm Ideathon'u 2026")
 
     st.divider()
