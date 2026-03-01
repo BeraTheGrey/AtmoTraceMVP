@@ -345,6 +345,24 @@ with tab_analiz:
     df_scored = compute_station_scores(df)
     result = find_source(df)
 
+    # Seçilen saat bilgisi (ana sayfada belirgin)
+    _sel_col1, _sel_col2, _sel_col3 = st.columns([2, 1, 1])
+    with _sel_col1:
+        st.markdown(
+            f"🕐 Analiz zamanı: **{selected_hour.strftime('%d %B %Y — %H:%M')}**"
+        )
+    with _sel_col2:
+        st.markdown(f"📡 **{len(df_scored)}** istasyon aktif")
+    with _sel_col3:
+        avg_pm10_val = df_scored["pm10"].mean()
+        avg_pm10_val = avg_pm10_val if pd.notna(avg_pm10_val) else 0
+        _hki_lbl, _hki_c, _ = _get_hki(avg_pm10_val)
+        st.markdown(
+            f"Genel HKİ: **<span style='color:{_hki_c}'>{_hki_lbl}</span>** "
+            f"(PM10 ort: {avg_pm10_val:.0f})",
+            unsafe_allow_html=True,
+        )
+
     # --- AI/ML Analizleri ---
     df_anomaly = detect_anomalies(df_scored)
     anomaly_stations = df_anomaly[df_anomaly["anomaly"] == -1]
@@ -374,12 +392,26 @@ with tab_analiz:
 
     # ---------- Sol Panel ---------- #
     with col_metrics:
-        st.subheader("\U0001F6A8 Kaynak Tespit Sonucu")
+        all_sources = result.get("all_sources", [])
+        n_sources = len(all_sources)
 
-        st.metric(
-            label="\U0001F4CD Muhtemel Kaynak Konumu",
-            value=f"{result['source_lat']:.4f}, {result['source_lon']:.4f}",
-        )
+        st.subheader(f"\U0001F6A8 Kaynak Tespit Sonucu ({n_sources or 1} bölge)")
+
+        if n_sources > 1:
+            for idx, src in enumerate(all_sources):
+                rank = idx + 1
+                emoji = "🔴" if rank == 1 else "🟠" if rank == 2 else "🟡"
+                st.markdown(
+                    f"{emoji} **#{rank}** — "
+                    f"`{src['lat']:.4f}, {src['lon']:.4f}` "
+                    f"(yoğunluk: {src['peak_density']:.3f})"
+                )
+        else:
+            st.metric(
+                label="\U0001F4CD Muhtemel Kaynak Konumu",
+                value=f"{result['source_lat']:.4f}, {result['source_lon']:.4f}",
+            )
+
         st.metric(
             label="\U0001F4CA Analiz Edilen İstasyon",
             value=f"{result['n_contributing']} istasyon",
@@ -543,33 +575,48 @@ with tab_analiz:
                 fill_opacity=0.8,
             ).add_to(fg)
 
-        # 4) Muhtemel kaynak işaretçisi
-        folium.Marker(
-            location=[result["source_lat"], result["source_lon"]],
-            popup=folium.Popup(
-                f"<b>\U0001F6A8 MUHTEMEL KİRLETİCİ KAYNAK</b><br>"
-                f"<hr style='margin:4px 0'>"
-                f"Konum: {result['source_lat']:.4f}, {result['source_lon']:.4f}<br>"
-                f"Yoğunluk: {result['peak_density']:.4f}<br>"
-                f"Analiz edilen: {result['n_contributing']} istasyon<br>"
-                f"Yöntem: Yörünge kesişim analizi",
-                max_width=300,
-            ),
-            tooltip="Muhtemel Kirletici Kaynak",
-            icon=folium.Icon(color="red", icon="exclamation-triangle", prefix="fa"),
-        ).add_to(fg)
+        # 4) Muhtemel kaynak işaretçileri (çoklu)
+        _src_colors = ["red", "orange", "beige", "lightgray", "lightgray"]
+        _src_icons_fa = ["exclamation-triangle", "exclamation-circle", "info-circle", "circle", "circle"]
+        _src_border = ["#CC0000", "#E65100", "#F9A825", "#9E9E9E", "#9E9E9E"]
+        _src_fill = ["#FF0000", "#FF6D00", "#FFD600", "#BDBDBD", "#BDBDBD"]
 
-        # 5) Kaynak çevresinde belirsizlik dairesi
-        folium.Circle(
-            location=[result["source_lat"], result["source_lon"]],
-            radius=2000,
-            color="#CC0000",
-            fill=True,
-            fill_color="#FF0000",
-            fill_opacity=0.08,
-            dash_array="8",
-            tooltip="Tahmin belirsizlik alanı (~2 km)",
-        ).add_to(fg)
+        for idx, src in enumerate(all_sources if all_sources else [
+            {"lat": result["source_lat"], "lon": result["source_lon"],
+             "peak_density": result["peak_density"], "confidence": result["confidence"]}
+        ]):
+            rank = idx + 1
+            folium.Marker(
+                location=[src["lat"], src["lon"]],
+                popup=folium.Popup(
+                    f"<b>{'🔴' if rank==1 else '🟠' if rank==2 else '🟡'} "
+                    f"MUHTEMEL KAYNAK #{rank}</b><br>"
+                    f"<hr style='margin:4px 0'>"
+                    f"Konum: {src['lat']:.4f}, {src['lon']:.4f}<br>"
+                    f"Yoğunluk: {src['peak_density']:.4f}<br>"
+                    f"Güven: %{src['confidence']*100:.0f}<br>"
+                    f"Yöntem: Yörünge kesişim analizi",
+                    max_width=300,
+                ),
+                tooltip=f"Muhtemel Kaynak #{rank}",
+                icon=folium.Icon(
+                    color=_src_colors[min(idx, 4)],
+                    icon=_src_icons_fa[min(idx, 4)],
+                    prefix="fa",
+                ),
+            ).add_to(fg)
+
+            # Belirsizlik dairesi
+            folium.Circle(
+                location=[src["lat"], src["lon"]],
+                radius=2000 if rank == 1 else 1500,
+                color=_src_border[min(idx, 4)],
+                fill=True,
+                fill_color=_src_fill[min(idx, 4)],
+                fill_opacity=0.06 if rank == 1 else 0.04,
+                dash_array="8",
+                tooltip=f"Kaynak #{rank} — belirsizlik alanı",
+            ).add_to(fg)
 
         # 6) En yakın bilinen kaynağa bağlantı çizgisi
         if nearest_source and nearest_dist < 25:
@@ -749,25 +796,43 @@ with tab_analiz:
 
     with hor_col2:
         st.subheader("\U0001F3ED Kaynak Doğrulama")
+
+        # Her tespit edilen kaynak için en yakın bilinen tesis
+        for src_idx, src in enumerate(all_sources if all_sources else [
+            {"lat": result["source_lat"], "lon": result["source_lon"]}
+        ]):
+            _ns = None
+            _nd = float("inf")
+            for ks in KNOWN_SOURCES:
+                d = _calc_distance_km(src["lat"], src["lon"], ks["lat"], ks["lon"])
+                if d < _nd:
+                    _nd = d
+                    _ns = ks
+
+            rank = src_idx + 1
+            emoji = "🔴" if rank == 1 else "🟠" if rank == 2 else "🟡"
+
+            if _ns:
+                if _nd < 5:
+                    st.success(
+                        f"{emoji} **Kaynak #{rank}** → **{_ns['name']}** "
+                        f"(**{_nd:.1f} km**) — yüksek uyum!"
+                    )
+                elif _nd < 15:
+                    st.warning(
+                        f"{emoji} **Kaynak #{rank}** → **{_ns['name']}** "
+                        f"({_nd:.1f} km) — olası uyum"
+                    )
+                else:
+                    st.info(
+                        f"{emoji} **Kaynak #{rank}** → **{_ns['name']}** "
+                        f"({_nd:.1f} km) — farklı kaynak olabilir"
+                    )
+
+        # Birincil kaynak detayı
         if nearest_source:
-            if nearest_dist < 5:
-                st.success(
-                    f"Tespit edilen kaynak **{nearest_source['name']}** "
-                    f"tesisine yalnızca **{nearest_dist:.1f} km** mesafede — "
-                    f"yüksek uyum!"
-                )
-            elif nearest_dist < 15:
-                st.warning(
-                    f"En yakın bilinen kaynak: **{nearest_source['name']}** "
-                    f"({nearest_dist:.1f} km mesafede)"
-                )
-            else:
-                st.info(
-                    f"En yakın bilinen kaynak: **{nearest_source['name']}** "
-                    f"({nearest_dist:.1f} km uzaklıkta — farklı bir emisyon "
-                    f"kaynağı olabilir)"
-                )
             st.markdown(
+                f"**Birincil kaynak eşleşmesi:** {nearest_source['name']}  \n"
                 f"**Tür:** {nearest_source['type']}  \n"
                 f"**Açıklama:** {nearest_source['desc']}"
             )
@@ -1154,14 +1219,14 @@ with tab_analiz:
         )
         st.plotly_chart(fig_corr, use_container_width=True)
 
-        # Gemini AI Yorum
+        # Gemini AI Yorum (buton ile tetiklenir — rate limit koruması)
         _gemini_key = st.secrets.get("GEMINI_API_KEY", "")
         if _gemini_key:
             _corr_cache = st.session_state.get("_corr_ai_cache", {})
             _corr_hash = str(sorted(_corr_cols)) + str(len(_corr_df))
             if _corr_cache.get("hash") == _corr_hash and _corr_cache.get("text"):
                 st.info("🤖 **Gemini AI Yorum:**\n\n" + _corr_cache["text"])
-            else:
+            elif st.button("🤖 AI ile Yorumla", key="btn_corr_ai"):
                 _pairs = []
                 for i, c1 in enumerate(_corr_matrix.columns):
                     for c2 in _corr_matrix.columns[i+1:]:
@@ -1172,7 +1237,8 @@ with tab_analiz:
                     "ortak kaynak hakkında ne söylüyor? 3-4 cümleyle Türkçe, bilimsel ve öz yaz.\n\n"
                     + "\n".join(_pairs)
                 )
-                _corr_ai = gemini_interpret(_corr_prompt, _gemini_key)
+                with st.spinner("Gemini yorumluyor..."):
+                    _corr_ai = gemini_interpret(_corr_prompt, _gemini_key)
                 if _corr_ai:
                     st.session_state["_corr_ai_cache"] = {"hash": _corr_hash, "text": _corr_ai}
                     st.info("🤖 **Gemini AI Yorum:**\n\n" + _corr_ai)
@@ -1197,10 +1263,9 @@ with tab_analiz:
             fig_cl.add_trace(go.Scattermap(
                 lat=subset["lat"],
                 lon=subset["lon"],
-                mode="markers+text",
+                mode="markers",
                 marker=dict(size=14, color=info["color"]),
                 text=subset["station_name"],
-                textposition="top center",
                 name=f"{info['icon']} {info['label']}",
                 hovertemplate=(
                     "<b>%{text}</b><br>"
@@ -1264,14 +1329,14 @@ with tab_analiz:
         for rec in health["recommendations"]:
             st.markdown(f"- {rec}")
 
-        # Gemini ile kişiselleştirilmiş yorum
+        # Gemini ile kişiselleştirilmiş yorum (buton ile tetiklenir)
         _gemini_key = st.secrets.get("GEMINI_API_KEY", "")
         if _gemini_key:
             _health_cache = st.session_state.get("_health_ai_cache", {})
             _health_hash = f"{health['score']}_{health['level']}"
             if _health_cache.get("hash") == _health_hash and _health_cache.get("text"):
                 st.info("🤖 " + _health_cache["text"])
-            else:
+            elif st.button("🤖 AI Sağlık Değerlendirmesi", key="btn_health_ai"):
                 _health_prompt = (
                     f"Sen bir halk sağlığı uzmanısın. İzmir'de şu an sağlık risk skoru "
                     f"{health['score']}/100 ({health['level']}). "
@@ -1281,7 +1346,8 @@ with tab_analiz:
                     "Bu duruma özel 2-3 cümlelik Türkçe, anlaşılır bir sağlık değerlendirmesi yaz. "
                     "Hassas grupları ve pratik önerileri vurgula."
                 )
-                _health_ai = gemini_interpret(_health_prompt, _gemini_key)
+                with st.spinner("Gemini değerlendiriyor..."):
+                    _health_ai = gemini_interpret(_health_prompt, _gemini_key)
                 if _health_ai:
                     st.session_state["_health_ai_cache"] = {"hash": _health_hash, "text": _health_ai}
                     st.info("🤖 " + _health_ai)
@@ -1603,6 +1669,15 @@ Böylece tahmine dayalı, yavaş denetimlerin yerini; **matematiksel kanıtlara 
 | **AI/ML** | scikit-learn + Google Gemini 2.5 Flash        | K-Means, Isolation Forest, LLM Rapor & Chatbot |
 | **Görselleştirme**| Plotly                                       | İstatistiksel zaman serisi, rüzgâr gülü |
 | **Matematik** | Küresel Trigonometri                          | Haversine tabanlı yörünge vektör hesabı |
+""")
+
+    st.subheader("👥 Takım")
+    st.markdown("""
+| Rol | İsim |
+|-----|------|
+| **Geliştirici** | Bera |
+
+*İklim için Dijital Dönüşüm Ideathon'u 2026*
 """)
 
     st.divider()

@@ -194,17 +194,47 @@ def find_source(df: pd.DataFrame) -> dict:
     from scipy.ndimage import gaussian_filter
     density_smooth = gaussian_filter(density, sigma=2.0)
 
-    # Tepe noktasi = muhtemel kaynak
-    peak_idx = np.unravel_index(np.argmax(density_smooth), density_smooth.shape)
-    source_lat = LAT_MIN + peak_idx[0] * GRID_RESOLUTION
-    source_lon = LON_MIN + peak_idx[1] * GRID_RESOLUTION
-    peak_val = float(density_smooth[peak_idx])
+    # --- Çoklu tepe noktası tespiti (multi-peak) ---
+    from scipy.ndimage import label, maximum_position
 
-    # Guvenilirlik: peak degerin max'a orani ve katki yapan istasyon sayisi
-    max_possible = density_smooth.max()
-    confidence = min(1.0, peak_val / max(max_possible, 0.01))
+    global_max = density_smooth.max()
+    if global_max == 0:
+        row = df.iloc[0]
+        return _empty_result(row)
 
-    # Katki yapan istasyonlar (trajectory'si kaynaga en yakin olanlar)
+    # Yoğunluk eşiği: global max'ın %20'sinden yüksek bölgeleri bul
+    binary = density_smooth >= (global_max * 0.20)
+    labeled_array, n_features = label(binary)
+
+    # Her bölgenin tepe noktasını bul
+    sources = []
+    for region_id in range(1, n_features + 1):
+        region_mask = labeled_array == region_id
+        region_vals = density_smooth * region_mask
+        peak_idx = np.unravel_index(np.argmax(region_vals), region_vals.shape)
+        peak_val = float(density_smooth[peak_idx])
+        s_lat = LAT_MIN + peak_idx[0] * GRID_RESOLUTION
+        s_lon = LON_MIN + peak_idx[1] * GRID_RESOLUTION
+        sources.append({
+            "lat": round(s_lat, 6),
+            "lon": round(s_lon, 6),
+            "peak_density": round(peak_val, 4),
+            "confidence": round(min(1.0, peak_val / max(global_max, 0.01)), 3),
+        })
+
+    # Yoğunluğa göre sırala (en güçlü ilk)
+    sources.sort(key=lambda s: s["peak_density"], reverse=True)
+    # En fazla 5 kaynak göster
+    sources = sources[:5]
+
+    # Birincil kaynak (geriye uyumluluk)
+    primary = sources[0]
+    source_lat = primary["lat"]
+    source_lon = primary["lon"]
+    peak_val = primary["peak_density"]
+    confidence = primary["confidence"]
+
+    # Katki yapan istasyonlar (trajectory'si birincil kaynaga en yakin olanlar)
     for traj in trajectories:
         traj_points = np.array(traj["points"])
         dists = _haversine(source_lat, source_lon,
@@ -215,7 +245,7 @@ def find_source(df: pd.DataFrame) -> dict:
 
     # Heatmap verisi
     grid_data = []
-    threshold = density_smooth.max() * 0.05
+    threshold = global_max * 0.05
     for i in range(n_lat):
         for j in range(n_lon):
             val = float(density_smooth[i, j])
@@ -223,7 +253,7 @@ def find_source(df: pd.DataFrame) -> dict:
                 grid_data.append([
                     LAT_MIN + i * GRID_RESOLUTION,
                     LON_MIN + j * GRID_RESOLUTION,
-                    val / density_smooth.max(),  # 0-1 normalize
+                    val / global_max,  # 0-1 normalize
                 ])
 
     return {
@@ -234,6 +264,7 @@ def find_source(df: pd.DataFrame) -> dict:
         "trajectories": trajectories,
         "grid_data": grid_data,
         "n_contributing": len(trajectories),
+        "all_sources": sources,
     }
 
 
@@ -246,6 +277,7 @@ def _empty_result(row):
         "trajectories": [],
         "grid_data": [],
         "n_contributing": 0,
+        "all_sources": [],
     }
 
 
